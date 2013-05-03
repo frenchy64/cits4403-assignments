@@ -16,7 +16,7 @@
 (defn start
   "Start gnuplot process."
   []
-  (let [^Process proc (.exec (Runtime/getRuntime) "gnuplot")
+  (let [^Process proc (.exec (Runtime/getRuntime) "gnuplot -persist")
         out  (-> (.getOutputStream proc) OutputStreamWriter. BufferedWriter.)]
     {:proc proc :out out}))
 

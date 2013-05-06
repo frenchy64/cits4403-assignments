@@ -1,24 +1,33 @@
-; This namespace is the main driver for the fire simulation.
-
 (ns fire.simulate
+  "This namespace is the main driver for the fire simulation."
   (:require [clojure.core.typed :refer [ann check-ns typed-deps def-alias ann-datatype
                                         for> fn> ann-form AnyInteger doseq> cf inst]]
             [clojure.core.typed.hole :as h]
             [fire.gnuplot :as plot :refer [GnuplotP]]
             [clojure.string :as str])
-  (:import (clojure.lang IPersistentVector IPersistentSet Seqable)))
+  (:import (clojure.lang IPersistentVector IPersistentSet Seqable)
+           (java.io Writer)))
 
-; Type check these namespaces before the current one.
 (typed-deps fire.gnuplot clojure.core.typed.hole)
 
-; # Define some type aliases
-; - Grid is a vector of vectors with leafs either the keyword :burning, :tree or :empty.
-(def-alias State (U ':burning ':tree ':empty))
-(def-alias Grid (IPersistentVector (IPersistentVector State)))
-(def-alias Point '[AnyInteger AnyInteger])
+(def-alias State 
+  "A point can either be empty, a tree, or a burning tree."
+  (U ':burning ':tree ':empty))
 
-(def-alias GridOpt '{:p Number
-                     :f Number})
+(def-alias Grid 
+  "An immutable snapshot of the world state."
+  (IPersistentVector (IPersistentVector State)))
+
+(def-alias Point 
+  "A point in 2D space."
+  '[AnyInteger, AnyInteger])
+
+(def-alias GridOpt 
+  "Options to configure grid generation.
+  :p - the probability a tree will grow in an empty site
+  :f - the probability a site with a tree will burn (lightning)"
+  '{:p Number
+    :f Number})
 
 (ann state->number [State -> Long])
 (defn state->number
@@ -84,9 +93,6 @@
                              (state-at grid [(+ row row-diff) (+ col col-diff)])))]
     neighbour-states))
 
-(ann ^:nocheck clojure.core/rand (Fn [-> Number]
-                                     [Number -> Number]))
-
 (ann next-state [Grid State Point GridOpt -> State])
 (defn next-state 
   "Return the state at the next time interval in grid for
@@ -135,30 +141,43 @@
             ; s is a state at a point
             (next-state grid s [row col] opt)))))))
 
-(ann update-simulation! [GnuplotP Grid -> nil])
+(def-alias SimOpt 
+  "gnuplot update options.
+  :time-code - the current frame number"
+  '{:time-code Number})
+
+(ann update-simulation! [GnuplotP Grid SimOpt -> nil])
 (defn update-simulation!
-  "Update the simulation with the provided grid"
-  [{:keys [out] :as gp} grid]
-  ; Print stdout straight to the Gnuplot process
-  (binding [*out* out]
-    (println 
-      "plot '-' matrix using (0+1*$1):(-1-1*$2):3 title 'Forest Fire Simulation' with image")
-    ; print each point. But first reverse the grid, we provide
-    ; each row in reverse order.
-    (doseq> [ss :- (Seqable State) (rseq grid)]
+  "Update the simulation with the provided grid.
+  Must provide :time-code entry to opt map."
+  [{:keys [out] :as gp} grid {:keys [time-code] :as opt}]
+  (let [nrows (count grid)
+        ncols (count (first grid))]
+    ; *out* is gnuplot
+    (binding [*out* out]
       (println
-        (str/join " "
-          (map state->number ss))))
-    ; tell gnuplot we're done
-    (println "e")
-    (flush)))
+        (str "plot '-' binary array=" nrows  "x" ncols
+             " flipy format='%char' title 'Forest Fire Simulation - Frame " time-code
+             "' with image"))
+      ; print each point. But first reverse the grid, we provide
+      ; each row in reverse order.
+      (let [^chars arr (char-array 
+                         (* (count grid) (count (first grid)))
+                         (map (fn> [s :- State] 
+                                (-> s state->number char))
+                              (apply concat (rseq grid))))]
+        (.write ^Writer *out* arr))
+      ; tell gnuplot we're done
+      (println)
+      (println "e")
+      (flush))))
 
 (ann ^:nocheck clojure.core/slurp [Any -> String])
 
 (ann setup-gnuplot! [GnuplotP -> nil])
 (defn setup-gnuplot! 
-  "Setup the Gnuplot window to prepare writing the simulation.
-  Actual commands are in 'resources/setup-gnuplot'."
+  "Setup the gnuplot window to prepare writing the simulation.
+  Actual setup commands are in 'resources/setup-gnuplot'."
   [{:keys [out]}]
   ; Print stdout straight to the Gnuplot process
   (binding [*out* out]
@@ -181,12 +200,13 @@
   (setup-gnuplot! current-proc)
 
   (def my-grid (atom (initial-grid)))
-  (def my-opts {:p 0.5 :f 0.5})
+  (def frame-number (atom 0))
+  (def my-opts {:p 0.1 :f 0.1})
 
-  (defn my-next
-    []
+  (defn my-next []
     (swap! my-grid next-grid my-opts)
-    (update-simulation! current-proc @my-grid))
+    (swap! frame-number inc)
+    (update-simulation! current-proc @my-grid {:time-code @frame-number}))
 
   (dotimes [_ 100] (my-next))
 

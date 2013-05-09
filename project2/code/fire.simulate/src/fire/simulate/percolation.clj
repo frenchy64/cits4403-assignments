@@ -1,43 +1,55 @@
 (ns fire.simulate.percolation
+  "This namespaces defines the initial grid function for
+  the percolation problem"
+  (:refer-clojure :exclude [macroexpand])
   (:require [clojure.core.typed :refer [ann check-ns typed-deps def-alias ann-datatype
                                         for> fn> ann-form AnyInteger doseq> cf inst into-array>
                                         override-method Atom1 letfn>]]
-            [fire.gnuplot :as plot :refer [GnuplotP]]
+            [clojure.math.numeric-tower :refer [floor abs]]
+            [clojure.tools.analyzer.hygienic :refer [macroexpand]]
+            [clojure.reflect :as reflect]
+            [fire.gnuplot :as plot]
             [fire.simulate :as sim]))
 
-(typed-deps fire.simulate fire.gnuplot)
+(typed-deps fire.simulate 
+            fire.gnuplot)
 
-(ann current-proc GnuplotP)
-(def current-proc (plot/start))
+;--------------------------------------------------
+; Grid operations
+;--------------------------------------------------
 
-(sim/setup-gnuplot! current-proc)
-
-(ann my-grid (Atom1 sim/Grid))
-
-(ann frame-number (Atom1 Number))
-(def frame-number (atom 0))
-
-(ann my-opts '{:p Number :f Number})
-(def my-opts {:p 0.1 :f 0.1})
-
-(ann initial-grid [& :optional {:rows Long, :cols Long} :mandatory {:q Number} -> sim/Grid])
+(ann initial-grid [& {:rows Long, :cols Long} :mandatory {:q Number} -> sim/Grid])
 (defn initial-grid
-  "Return the initial grid state, a vector of vectors, with each
-  position initialised to :empty. If not provided, number of rows and column default
-  to 100."
+  "Return the initial grid. States are :tree with probability q, and :empty
+  with probability 1 - q.
+  Ignites a small patch of trees in the centre of the grid.
+  If not provided, number of rows and column default to 100."
   [& {:keys [rows cols q] :or {rows 100 cols 100}}]
-  (letfn> [state-at :- [-> sim/State]
-           (state-at []
-             (if (sim/occurs? q) 
-               :tree 
-               :empty))]
-    (vec
-      (repeatedly
-        rows
-        (fn [] (vec (repeatedly cols state-at)))))))
+  (letfn> [burning? :- [sim/Point -> Boolean]
+           (burning? 
+             ;Ignite a small patch of trees in the centre.
+             [[row col]]
+             (let [mid-row (floor (/ rows 2))
+                   mid-col (floor (/ cols 2))]
+               (boolean
+                 (when (and (<= 0 mid-row)
+                            (<= 0 mid-col))
+                   (and (<= (abs (- row mid-row)) 2)
+                        (<= (abs (- row mid-row)) 2))))))
 
-(def my-grid (atom (initial-grid :q 0.1)))
+           gen-state :- [sim/Point -> sim/State]
+           (gen-state
+             ;State is a :tree with probability q, :empty
+             ;with probability 1-q, or :burning if part of the
+             ;small patch of trees in the centre of the grid.
+             [p]
+             (cond 
+               (burning? p) :burning
+               (sim/occurs? q) :tree 
+               :else :empty))]
+    (sim/grid-from-fn gen-state :rows rows, :cols cols)))
 
+(comment
 (ann my-next [-> nil])
 (defn my-next []
   (swap! my-grid sim/next-grid my-opts)
@@ -45,5 +57,24 @@
   (swap! frame-number (fn> [x :- Number] (inc x)))
   (sim/update-simulation! current-proc @my-grid {:time-code @frame-number})
   nil)
+  )
 
-#_(dotimes [_ 100] (my-next))
+(comment
+  (def proc (plot/start))
+  (sim/setup-gnuplot! proc)
+  (def state (initial-grid :q 0.1))
+  )
+
+(comment
+  (A/getBasis)
+  (extend-type A P (adsf [this] this))
+  (extend-type nil P  (adsf [this] this))
+  (do (defprotocol P
+        (asdf [this]))
+      (reflect/type-reflect (class (:adsf (get (:impls P) A)))
+                            :reflector (clojure.reflect.JavaReflector. (.getContextClassLoader (Thread/currentThread))))))
+(comment
+  (A/getBasis)
+  (do (defrecord A [a b c d])
+      (reflect/type-reflect A 
+                            :reflector (clojure.reflect.JavaReflector. (.getContextClassLoader (Thread/currentThread))))))

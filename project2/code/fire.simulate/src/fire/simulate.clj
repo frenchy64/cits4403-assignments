@@ -8,7 +8,12 @@
   (:import (clojure.lang IPersistentVector IPersistentSet Seqable)
            (java.io Writer)))
 
-(typed-deps fire.gnuplot clojure.core.typed.hole)
+(typed-deps fire.gnuplot 
+            clojure.core.typed.hole)
+
+;-----------------------------------------------------------------
+; Type Aliases
+;-----------------------------------------------------------------
 
 (def-alias State 
   "A point can either be empty, a tree, or a burning tree."
@@ -29,6 +34,10 @@
   '{:p Number
     :f Number})
 
+;-----------------------------------------------------------------
+; Utility functions
+;-----------------------------------------------------------------
+
 (ann state->number [State -> Long])
 (defn state->number
   "Convert the keyword representation of a state to
@@ -45,17 +54,38 @@
   [p]
   (< (rand) p))
 
+
+;-----------------------------------------------------------------
+; Grid operations
+;-----------------------------------------------------------------
+
+(ann grid-from-fn [[Point -> State] & {:rows Long, :cols Long} -> Grid])
+(defn grid-from-fn 
+  "Generate a grid with dimensions rows by cols. state-fn
+  is fed each Point in the grid, and should return the initial state
+  at that point."
+  [state-fn & {:keys [rows cols] :or {rows 100 cols 100}}]
+  (vec
+    (for> :- (IPersistentVector State)
+      [row :- AnyInteger, (range rows)]
+      (vec
+        (for> :- State
+          [col :- AnyInteger, (range cols)]
+          (state-fn [row col]))))))
+
 (ann initial-grid [& {:rows Long, :cols Long} -> Grid])
 (defn initial-grid
   "Return the initial grid state, a vector of vectors, with each
   position initialised to :empty. If not provided, number of rows and column default
   to 100."
   [& {:keys [rows cols] :or {rows 100 cols 100}}]
-  (let [c (vec (repeat cols :empty))]
-    (vec (repeat rows c))))
+  (grid-from-fn (constantly :empty) :rows rows :cols cols))
 
 (ann state-at [Grid Point -> State])
-(defn state-at [gr [row col]]
+(defn state-at 
+  "Return the state in the provided grid, at the provided 2D point.
+  Throws an exception if point outside the grid's dimensions."
+  [gr [row col]]
   (-> gr
       (nth row)
       (nth col)))
@@ -125,32 +155,39 @@
   according to the 4 update rules. See next-state for the state 
   increment."
   [grid opt]
-  (let [; we need to instantiate `vector` because core.typed's inference isn't good enough.
-        ; Semantically these functions are exactly `vector`.
+  (let [; ---------------------------------------------------------------------------------
+        ; START BOILERPLATE
+        ;  we need to instantiate `vector` because core.typed's inference isn't good enough.
+        ;  Semantically these functions are exactly `vector`.
         row-states (inst vector AnyInteger (IPersistentVector State) Any Any Any Any)
-        col-states (inst vector AnyInteger State Any Any Any Any)]
+        col-states (inst vector AnyInteger State Any Any Any Any)
+        ; END BOILERPLATE
+        ;----------------------------------------------------------------------------------
+        ]
     (vec
       (for> :- (IPersistentVector State)
-        [[row ss] :- '[AnyInteger (IPersistentVector State)] (map-indexed row-states grid)]
+        [[row ss] :- '[AnyInteger (IPersistentVector State)], (map-indexed row-states grid)]
         ; row is the row number
         ; ss is a whole column of states
         (vec
           (for> :- State
-            [[col s] :- '[AnyInteger State] (map-indexed col-states ss)]
+            [[col s] :- '[AnyInteger State], (map-indexed col-states ss)]
             ; col is the col number
             ; s is a state at a point
             (next-state grid s [row col] opt)))))))
 
-(def-alias SimOpt 
-  "gnuplot update options.
-  :time-code - the current frame number"
-  '{:time-code Number})
 
-(ann update-simulation! [GnuplotP Grid SimOpt -> nil])
+;-----------------------------------------------------------------
+; gnuplot operations
+;-----------------------------------------------------------------
+
+(ann update-simulation! [GnuplotP Grid & {} :mandatory {:time-code Number} -> nil])
 (defn update-simulation!
   "Update the simulation with the provided grid.
-  Must provide :time-code entry to opt map."
-  [{:keys [out] :as gp} grid {:keys [time-code] :as opt}]
+
+  Accepts mandatory keyword parameters:
+    - :time-code  an integer of the current frame number"
+  [{:keys [out] :as gp} grid & {:keys [time-code] :as opt}]
   (let [nrows (count grid)
         ncols (count (first grid))]
     ; *out* is gnuplot
@@ -159,12 +196,13 @@
         (str "plot '-' binary array=" nrows  "x" ncols
              " flipy format='%char' title 'Forest Fire Simulation - Frame " time-code
              "' with image"))
-      ; print each point. But first reverse the grid, we provide
-      ; each row in reverse order.
+      ; print each point to gnuplot as a char array.
       (let [^chars arr (char-array 
+                         ; array length is rowsxcols
                          (* (count grid) (count (first grid)))
-                         (map (fn> [s :- State] 
+                         (map (fn> [s :- State]
                                 (-> s state->number char))
+                              ; reverse the grid, we provide each row in reverse order.
                               (apply concat (rseq grid))))]
         (.write ^Writer *out* arr))
       ; tell gnuplot we're done
@@ -184,18 +222,18 @@
     (println (slurp "resources/setup-gnuplot"))
     (flush)))
 
-(ann run-simulation! [& {:p Number :f Number} -> nil])
-(defn run-simulation!
-  "Run a forest fire simulation via gnuplot."
-  [& {:as opts}]
-  (let [; start a new Gnuplot process
-        gp (plot/start)
-        ; get the initial world state
-        s0 (initial-grid)]
-    (setup-gnuplot! gp)
-    (h/silent-hole)))
 
 (comment
+  (ann run-simulation! [& {:p Number :f Number} -> nil])
+  (defn run-simulation!
+    "Run a forest fire simulation via gnuplot."
+    [& {:as opts}]
+    (let [; start a new Gnuplot process
+          gp (plot/start)
+          ; get the initial world state
+          s0 (initial-grid)]
+      (setup-gnuplot! gp)
+      (h/silent-hole)))
   (def current-proc (plot/start))
   (setup-gnuplot! current-proc)
 

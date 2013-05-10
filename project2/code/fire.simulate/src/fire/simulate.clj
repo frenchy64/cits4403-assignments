@@ -6,7 +6,7 @@
             [clojure.core.typed.hole :as h]
             [fire.gnuplot :as plot :refer [GnuplotP]]
             [clojure.string :as str])
-  (:import (clojure.lang IPersistentVector IPersistentSet Seqable)
+  (:import (clojure.lang IPersistentVector IPersistentSet Seqable LazySeq)
            (java.io Writer)))
 
 (typed-deps fire.gnuplot 
@@ -29,7 +29,8 @@
   - :cols   number of columns"
   '{:grid (IPersistentVector (IPersistentVector State))
     :rows AnyInteger,
-    :cols AnyInteger})
+    :cols AnyInteger
+    :history (IPersistentVector '{:nburning AnyInteger})})
 
 (def-alias Point 
   "A point in 2d space."
@@ -81,7 +82,8 @@
                          [col :- AnyInteger, (range cols)]
                          (state-fn [row col])))))
    :rows rows
-   :cols cols})
+   :cols cols
+   :history []})
 
 (ann initial-grid [& {:rows Long, :cols Long} -> Grid])
 (defn initial-grid
@@ -119,15 +121,15 @@
   {:nrows (:rows grid)
    :ncols (:cols grid)})
 
-(ann neighbour-points [Grid Point -> (IPersistentSet Point)])
+(ann neighbour-points [Grid Point -> (LazySeq Point)])
 (defn neighbour-points 
-  "Return the set of neighbour points of point pnt, respecting
+  "Return the a lazy sequence containing the states of neighbour points of point pnt, respecting
   periodic boundary conditions"
-  [grid [row col :as p]]
+  [grid [^long row, ^long col, :as p]]
   (letfn> [wrap-around :- [AnyInteger AnyInteger -> AnyInteger]
            ; takes a magnitude of a dimension and the length of the
            ; dimension and corrects it for periodic boundary conditions
-           (wrap-around [new-x x-length]
+           (wrap-around [^long new-x ^long x-length]
              (cond
                ; wrap up
                (< new-x 0) (+ new-x x-length)
@@ -139,23 +141,21 @@
           ; check current point is between grid bounds
           _ (assert (<= 0 row (dec nrows)) "Row out of bounds")
           _ (assert (<= 0 col (dec ncols)) "Column out of bounds")]
-      (set
-        ; collect the states of each neighbour, respecting periodic boundary conditions
-        (for> :- Point 
-           [[row-diff col-diff] :- '[Long Long], neighbour-positions]
-           (let [neighbour-row (wrap-around (+ row row-diff) nrows)
-                 neighbour-col (wrap-around (+ col col-diff) ncols)]
-             [neighbour-row neighbour-col]))))))
+      ; collect the states of each neighbour, respecting periodic boundary conditions
+      (for> :- Point 
+            [[^long row-diff ^long col-diff] :- '[Long Long], neighbour-positions]
+            (let [neighbour-row (wrap-around (+ row row-diff) nrows)
+                  neighbour-col (wrap-around (+ col col-diff) ncols)]
+              [neighbour-row neighbour-col])))))
 
-(ann nearest-neighbours [Grid Point -> (IPersistentSet State)])
+(ann nearest-neighbours [Grid Point -> (LazySeq State)])
 (defn nearest-neighbours 
-  "Return the set of states of the nearest neighbours
+  "Return a lazy sequence containing the states of the nearest neighbours
   of point p0 in grid. Respects periodic boundary conditions."
   [grid p0]
   (->> (neighbour-points grid p0)
        (map (fn> [p1 :- Point]
-              (state-at grid p1)))
-       set))
+              (state-at grid p1)))))
 
 (ann next-state [Grid State Point GridOpt -> State])
 (defn next-state
@@ -172,7 +172,7 @@
       ;4. A tree without a burning nearest neighbour becomes a burning tree during
       ;one time step with probability f (e.g. lightning).
       :tree 
-      (if (:burning neighbours)
+      (if (some #(= :burning %) neighbours)
         :burning
         (if (occurs? f) 
           :burning
@@ -182,6 +182,11 @@
       :empty (if (occurs? p)
                :tree
                :empty))))
+
+(ann flat-grid [Grid -> (Seqable State)])
+(defn flat-grid [{:keys [grid]}]
+  (ann-form grid (Seqable (Seqable State)))
+  (apply concat grid))
 
 (ann next-grid [Grid GridOpt -> Grid])
 (defn next-grid 
@@ -199,6 +204,8 @@
         ;----------------------------------------------------------------------------------
         ]
     (-> grid
+      (assoc :history 
+             (conj (:history grid) {:nburning (count (filter #(= :burning %) (flat-grid grid)))}))
       (assoc :grid
              (vec
                (for> :- (IPersistentVector State)
@@ -223,10 +230,21 @@
 
   Accepts mandatory keyword parameters:
     - :time-code  an integer of the current frame number"
-  [{:keys [out] :as gp} grid & {:keys [time-code] :as opt}]
+  [{:keys [out] :as gp} {:keys [history] :as grid} & {:keys [time-code] :as opt}]
+  (ann-form history (IPersistentVector '{:nburning AnyInteger}))
   (let [{:keys [nrows ncols]} (grid-dimensions grid)]
     ; *out* is gnuplot
     (binding [*out* out]
+      ;plot the forest
+      (println (slurp "resources/setup-gnuplot.gpi"))
+      (println "set term x11 0")
+      (println "unset grid")
+      (println "unset xlabel")
+      (println "unset ylabel")
+      (println "unset xtics")
+      (println "unset ytics")
+      (println "unset x2tics")
+      (println "unset y2tics")
       (println
         (str "plot '-' binary array=" nrows  "x" ncols
              " flipy format='%char' title 'Forest Fire Simulation - Frame " time-code
@@ -240,6 +258,16 @@
                               ; reverse the grid, we provide each row in reverse order.
                               (apply concat (rseq (:grid grid)))))]
         (.write ^Writer *out* arr))
+      ;plot the burning tree graph
+      (println "set term x11 1")
+      (println "unset grid")
+      (println "set title 'Number of Burning trees'")
+      (println "set xlabel 'Time'")
+      (println "set ylabel 'Number of Burning trees'")
+      ;plot the last 20 entries
+      (println (str "plot [" (max (- (count history) 20) 0) ":" (count history) "][0:] '-' with lines"))
+      (doseq> [{:keys [nburning]} :- '{:nburning AnyInteger}, history]
+        (println nburning))
       ; tell gnuplot we're done
       (println)
       (println "e")

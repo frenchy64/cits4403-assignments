@@ -2,19 +2,20 @@
   "This namespace is the main driver for the fire simulation."
   (:require [clojure.core.typed :refer [ann check-ns typed-deps def-alias ann-datatype
                                         for> fn> ann-form AnyInteger doseq> dotimes>]]
+            [clojure.tools.analyzer :refer [analyze-form]]
             [fire.simulate :as sim]))
 
 (typed-deps fire.simulate)
 
 (ann ^:nocheck create-grid [[sim/Point -> sim/State] Long Long -> sim/Grid])
-(defn create-grid [state-fn rows cols]
+(defn create-grid [state-fn ^long rows ^long cols]
   (loop [row 0
          grid-v (transient [])]
     (if (< row rows)
       (recur (inc row)
-             (conj! grid-v (loop [col 0, col-v (transient [])]
+             (conj! grid-v (loop [col (long 0), col-v (transient [])]
                              (if (< col cols)
-                               (recur (inc col) (conj! col-v (state-fn [row col])))
+                               (recur (long (inc col)) (conj! col-v (state-fn [row col])))
                                (persistent! col-v)))))
       (persistent! grid-v))))
 
@@ -39,5 +40,5 @@
       (assoc :grid
              (create-grid (fn [[row col :as pnt]]
                             (let [s0 (sim/state-at grid pnt)]
-                              (time (sim/next-state grid s0 pnt {:p (:p opt) :f (:f opt)}))))
+                              (sim/next-state grid s0 pnt {:p (:p opt) :f (:f opt)})))
                           nrows ncols)))))

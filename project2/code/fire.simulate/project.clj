@@ -10,4 +10,5 @@
                  [org.clojure/tools.cli "0.2.2"]
                  [seesaw "1.4.3"]
                  [org.clojure/math.numeric-tower "0.0.2"]]
+  :warn-on-reflection true
   :main fire.main)

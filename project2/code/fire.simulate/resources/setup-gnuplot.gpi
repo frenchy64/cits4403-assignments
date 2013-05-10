@@ -2,13 +2,13 @@ set term x11 size 800,600 # which "device" to plot onto: x11 window
 
 set size ratio 1 # aspect ratio of the axes
 
-set palette model RGB defined (0 'white', 0.99 'white', 1 'gray', 1.99 'gray', 2 'black', 2.99 'black', 3 'red', 3.99 'red') # cell state colorcode
+set palette model RGB defined (0 'white', 0.99 'white', 1 'gray', 1.99 'gray', 2 'black', 2.99 'black') # cell state colorcode
 
-set cbrange [0:3.99] # range of colormap box (otherwise inferred from data)
+set cbrange [0:2.99] # range of colormap box (otherwise inferred from data)
 
-set cbtics ("state 0" 0, "state 1" 1, "state 2" 2, "state 3" 3) offset 0,2
+set cbtics ("Empty cell" 0, "Green Tree" 1, "Burning Tree" 2) offset 0,2
 
-set title "My Cellular Automaton"
+set title "Forest-fire Cellular Automata"
 
 set key at graph 1,1 bottom Right reverse # used to show current ‘time’
 

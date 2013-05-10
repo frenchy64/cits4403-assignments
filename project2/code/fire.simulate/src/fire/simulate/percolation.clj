@@ -74,10 +74,14 @@
 (ann start! [& {:q Number, :grid sim/Grid, :p Number, :f Number} -> PercolationP])
 (defn start! 
   "Start a gnuplot process and initialize it to the starting
-  state. An initial grid can be optionally provided via the :grid keyword argument.
-  :q is the :q passed to initial-grid.
-  :p is the probability of a tree growing in an empty square.
-  :f is the probability of lightning.
+  state. 
+
+  Keyword arguments:
+  - :grid  an optional initial grid instead of generating one
+  - :q     the :q passed to initial-grid.
+  - :p     the probability of a tree growing in an empty square.
+  - :f     the probability of lightning.
+
   Returns a map for percolation ops."
   [& {:keys [q p f grid] :or {q 0.1, p 0, f 0}}]
   (let [grid0 (or grid (initial-grid :q q))
@@ -103,6 +107,7 @@
         (assoc :grid grid1)
         (assoc :frame frame1))))
 
+
 (comment
 (ann my-next [-> nil])
 (defn my-next []
@@ -117,5 +122,6 @@
 (def proc (atom (start! :q 0.1 :p 0 :f 0)))
 
   (dotimes [_ 100]
-    (swap! proc next!))
+    (time
+      (swap! proc next!)))
   )

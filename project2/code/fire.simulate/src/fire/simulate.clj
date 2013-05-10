@@ -10,6 +10,7 @@
            (java.io Writer)))
 
 (typed-deps fire.gnuplot 
+            fire.types
             clojure.core.typed.hole)
 
 ;-----------------------------------------------------------------
@@ -20,19 +21,25 @@
   "A point can either be empty, a tree, or a burning tree."
   (U ':burning ':tree ':empty))
 
-(def-alias Grid 
-  "An immutable snapshot of the world state."
-  (IPersistentVector (IPersistentVector State)))
+(def-alias Grid
+  "An immutable snapshot of the world state.
+  
+  - :grid   the grid
+  - :rows   number of rows
+  - :cols   number of columns"
+  '{:grid (IPersistentVector (IPersistentVector State))
+    :rows AnyInteger,
+    :cols AnyInteger})
 
 (def-alias Point 
-  "A point in 2D space."
+  "A point in 2d space."
   '[AnyInteger, AnyInteger])
 
 (def-alias GridOpt 
   "Options to configure grid generation.
   :p - the probability a tree will grow in an empty site
   :f - the probability a site with a tree will burn (lightning)"
-  '{:p Number
+  '{:p Number,
     :f Number})
 
 ;-----------------------------------------------------------------
@@ -66,13 +73,15 @@
   is fed each Point in the grid, and should return the initial state
   at that point."
   [state-fn & {:keys [rows cols] :or {rows 100 cols 100}}]
-  (vec
-    (for> :- (IPersistentVector State)
-      [row :- AnyInteger, (range rows)]
-      (vec
-        (for> :- State
-          [col :- AnyInteger, (range cols)]
-          (state-fn [row col]))))))
+  {:grid (vec
+           (for> :- (IPersistentVector State)
+                 [row :- AnyInteger, (range rows)]
+                 (vec
+                   (for> :- State
+                         [col :- AnyInteger, (range cols)]
+                         (state-fn [row col])))))
+   :rows rows
+   :cols cols})
 
 (ann initial-grid [& {:rows Long, :cols Long} -> Grid])
 (defn initial-grid
@@ -84,10 +93,10 @@
 
 (ann state-at [Grid Point -> State])
 (defn state-at 
-  "Return the state in the provided grid, at the provided 2D point.
+  "Return the state in the provided grid, at the provided 2d point.
   Throws an exception if the point is outside the grid's dimensions."
-  [grid [row col]]
-  (-> grid
+  [grid [row col :as pnt]]
+  (-> (:grid grid)
       (nth row)
       (nth col)))
 
@@ -107,8 +116,8 @@
 
 (ann grid-dimensions [Grid -> '{:nrows AnyInteger, :ncols AnyInteger}])
 (defn grid-dimensions [grid]
-  {:nrows (count grid)
-   :ncols (count (first grid))})
+  {:nrows (:rows grid)
+   :ncols (:cols grid)})
 
 (ann neighbour-points [Grid Point -> (IPersistentSet Point)])
 (defn neighbour-points 
@@ -177,8 +186,8 @@
 (ann next-grid [Grid GridOpt -> Grid])
 (defn next-grid 
   "Simultaneously update a Grid to the next time increment
-  according to the 4 update rules. See next-state for the state 
-  increment."
+  according to the 4 update rules. Observed periodic boundary conditions.
+  See next-state for the state increment."
   [grid opt]
   (let [; ---------------------------------------------------------------------------------
         ; START TYPE SYSTEM BOILERPLATE
@@ -189,17 +198,19 @@
         ; END BOILERPLATE
         ;----------------------------------------------------------------------------------
         ]
-    (vec
-      (for> :- (IPersistentVector State)
-        [[row ss] :- '[AnyInteger (IPersistentVector State)], (map-indexed row-states grid)]
-        ; row is the row number
-        ; ss is a whole column of states
-        (vec
-          (for> :- State
-            [[col s] :- '[AnyInteger State], (map-indexed col-states ss)]
-            ; col is the col number
-            ; s is a state at a point
-            (next-state grid s [row col] opt)))))))
+    (-> grid
+      (assoc :grid
+             (vec
+               (for> :- (IPersistentVector State)
+                 [[row ss] :- '[AnyInteger (IPersistentVector State)], (map-indexed row-states (:grid grid))]
+                 ; row is the row number
+                 ; ss is a whole column of states
+                 (vec
+                   (for> :- State
+                     [[col s] :- '[AnyInteger State], (map-indexed col-states ss)]
+                     ; col is the col number
+                     ; s is a state at a point
+                     (next-state grid s [row col] opt)))))))))
 
 
 ;-----------------------------------------------------------------
@@ -213,8 +224,7 @@
   Accepts mandatory keyword parameters:
     - :time-code  an integer of the current frame number"
   [{:keys [out] :as gp} grid & {:keys [time-code] :as opt}]
-  (let [nrows (count grid)
-        ncols (count (first grid))]
+  (let [{:keys [nrows ncols]} (grid-dimensions grid)]
     ; *out* is gnuplot
     (binding [*out* out]
       (println
@@ -224,27 +234,25 @@
       ; print each point to gnuplot as a char array.
       (let [^chars arr (char-array 
                          ; array length is rowsxcols
-                         (* (count grid) (count (first grid)))
+                         (* nrows ncols)
                          (map (fn> [s :- State]
                                 (-> s state->number char))
                               ; reverse the grid, we provide each row in reverse order.
-                              (apply concat (rseq grid))))]
+                              (apply concat (rseq (:grid grid)))))]
         (.write ^Writer *out* arr))
       ; tell gnuplot we're done
       (println)
       (println "e")
       (flush))))
 
-(ann ^:nocheck clojure.core/slurp [Any -> String])
-
 (ann setup-gnuplot! [GnuplotP -> nil])
 (defn setup-gnuplot! 
   "Setup the gnuplot window to prepare writing the simulation.
-  Actual setup commands are in 'resources/setup-gnuplot'."
+  Actual setup commands are in 'resources/setup-gnuplot.gpi'."
   [{:keys [out]}]
   ; Print stdout straight to the Gnuplot process
   (binding [*out* out]
-    (println (slurp "resources/setup-gnuplot"))
+    (println (slurp "resources/setup-gnuplot.gpi"))
     (flush)))
 
 

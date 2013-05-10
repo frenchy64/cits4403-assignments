@@ -1,7 +1,8 @@
 (ns fire.simulate
   "This namespace is the main driver for the fire simulation."
   (:require [clojure.core.typed :refer [ann check-ns typed-deps def-alias ann-datatype
-                                        for> fn> ann-form AnyInteger doseq> cf inst]]
+                                        for> fn> ann-form AnyInteger doseq> cf inst
+                                        letfn>]]
             [clojure.core.typed.hole :as h]
             [fire.gnuplot :as plot :refer [GnuplotP]]
             [clojure.string :as str])
@@ -84,9 +85,9 @@
 (ann state-at [Grid Point -> State])
 (defn state-at 
   "Return the state in the provided grid, at the provided 2D point.
-  Throws an exception if point outside the grid's dimensions."
-  [gr [row col]]
-  (-> gr
+  Throws an exception if the point is outside the grid's dimensions."
+  [grid [row col]]
+  (-> grid
       (nth row)
       (nth col)))
 
@@ -104,27 +105,51 @@
     [-1 0]  ;lower
     })
 
+(ann grid-dimensions [Grid -> '{:nrows AnyInteger, :ncols AnyInteger}])
+(defn grid-dimensions [grid]
+  {:nrows (count grid)
+   :ncols (count (first grid))})
+
+(ann neighbour-points [Grid Point -> (IPersistentSet Point)])
+(defn neighbour-points 
+  "Return the set of neighbour points of point pnt, respecting
+  periodic boundary conditions"
+  [grid [row col :as p]]
+  (letfn> [wrap-around :- [AnyInteger AnyInteger -> AnyInteger]
+           ; takes a magnitude of a dimension and the length of the
+           ; dimension and corrects it for periodic boundary conditions
+           (wrap-around [new-x x-length]
+             (cond
+               ; wrap up
+               (< new-x 0) (+ new-x x-length)
+               ; wrap down
+               (>= new-x x-length) (- new-x x-length)
+               ; already inside
+               :else new-x))]
+    (let [{:keys [nrows ncols]} (grid-dimensions grid)
+          ; check current point is between grid bounds
+          _ (assert (<= 0 row (dec nrows)) "Row out of bounds")
+          _ (assert (<= 0 col (dec ncols)) "Column out of bounds")]
+      (set
+        ; collect the states of each neighbour, respecting periodic boundary conditions
+        (for> :- Point 
+           [[row-diff col-diff] :- '[Long Long], neighbour-positions]
+           (let [neighbour-row (wrap-around (+ row row-diff) nrows)
+                 neighbour-col (wrap-around (+ col col-diff) ncols)]
+             [neighbour-row neighbour-col]))))))
+
 (ann nearest-neighbours [Grid Point -> (IPersistentSet State)])
 (defn nearest-neighbours 
   "Return the set of states of the nearest neighbours
-  of the point (row,col) in grid"
-  [grid [row col]]
-  (let [upper-row (dec (count grid))
-        upper-col (dec (count (first grid)))
-        ; check row and col are between grid bounds
-        _ (assert (<= 0 row upper-row) "Row out of bounds")
-        _ (assert (<= 0 col upper-col) "Column out of bounds")
-        neighbour-states (set
-                           (for> :- State 
-                                 [[row-diff col-diff] :- '[Long Long] neighbour-positions
-                                  ;filter out points outside the boundary
-                                  :when (and (<= 0 (+ row row-diff) upper-row)
-                                             (<= 0 (+ col col-diff) upper-col))]
-                             (state-at grid [(+ row row-diff) (+ col col-diff)])))]
-    neighbour-states))
+  of point p0 in grid. Respects periodic boundary conditions."
+  [grid p0]
+  (->> (neighbour-points grid p0)
+       (map (fn> [p1 :- Point]
+              (state-at grid p1)))
+       set))
 
 (ann next-state [Grid State Point GridOpt -> State])
-(defn next-state 
+(defn next-state
   "Return the state at the next time interval in grid for
   the given point, with current state s."
   [grid s [row col :as point] {:keys [f p] :as opt}]
@@ -156,9 +181,9 @@
   increment."
   [grid opt]
   (let [; ---------------------------------------------------------------------------------
-        ; START BOILERPLATE
+        ; START TYPE SYSTEM BOILERPLATE
         ;  we need to instantiate `vector` because core.typed's inference isn't good enough.
-        ;  Semantically these functions are exactly `vector`.
+        ;  Semantically both row-states and col-states are exactly clojure.core/vector.
         row-states (inst vector AnyInteger (IPersistentVector State) Any Any Any Any)
         col-states (inst vector AnyInteger State Any Any Any Any)
         ; END BOILERPLATE

@@ -19,7 +19,7 @@
             clojure.core.typed.hole)
 
 (ann run-percolation [Number -> nil])
-(defn run-percolation [q]
+(defn run-percolation [p]
   (let [proc (plot/start)]
     (letfn> [clean-up :- [-> nil]
              (clean-up []
@@ -34,7 +34,7 @@
                           #_(case kw
                               :exit 
                               :next ))]
-      (let [g0 (perc/initial-grid :q q)]
+      (let [g0 (perc/initial-grid :p p)]
         (with-open [rdr (reader *in*)]
           (loop> [c :- (Seqable String), (line-seq rdr)]
             (parse-input c)

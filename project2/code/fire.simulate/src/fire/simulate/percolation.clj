@@ -4,7 +4,8 @@
   (:refer-clojure :exclude [macroexpand])
   (:require [clojure.core.typed :refer [ann check-ns typed-deps def-alias ann-datatype
                                         for> fn> ann-form AnyInteger doseq> cf inst into-array>
-                                        override-method Atom1 letfn> ann-form dotimes>]
+                                        override-method Atom1 letfn> ann-form dotimes>
+                                        nilable-param non-nil-return]
              :as tc]
             [clojure.math.numeric-tower :refer [floor abs]]
             [clojure.tools.analyzer.hygienic :refer [macroexpand]]
@@ -14,7 +15,7 @@
             [clojure.java.io :as io]
             [clojure.string :as str]
             [clojure.tools.trace :as trace])
-  (:import (clojure.lang IPersistentVector)))
+  (:import (clojure.lang IPersistentVector Seqable)))
 
 (typed-deps fire.simulate 
             fire.gnuplot)
@@ -79,7 +80,7 @@
 ; gnuplot ops
 ;--------------------------------------------------
 
-(ann start! [& {:q Number, :grid sim/Grid, :p Number, :f Number :no-update Any, :proc plot/GnuplotP} -> PercolationP])
+(ann start! [& {:q Number, :grid sim/Grid, :p Number, :f Number :no-update Any, :gnuplot plot/GnuplotP} -> PercolationP])
 (defn start! 
   "Start a gnuplot process and initialize it to the starting
   state. 
@@ -90,12 +91,12 @@
   - :p     the probability of a tree growing in an empty square.
   - :f     the probability of lightning.
   - :no-update  If true, do not update a graph with the initial state. Defaults to nil.
-  - :proc  an optional gnuplot process
+  - :gnuplot  an optional gnuplot process
 
   Returns a map for percolation ops."
-  [& {:keys [q p f grid no-update proc] :or {q 0.1, p 0, f 0}}]
+  [& {:keys [q p f grid no-update gnuplot] :or {q 0.1, p 0, f 0}}]
   (let [grid0 (or grid (initial-grid :q q))
-        proc (or proc (plot/start))
+        proc (or gnuplot (plot/start))
         frame0 0]
     (sim/with-gunplot-toplevel proc
       (sim/setup-gnuplot! proc)
@@ -137,8 +138,8 @@
   help epslatex output a full tex file. This makes
   'output' and 'terminal' dirty, they should be set again."
   []
-  (println "set terminal png")
-  (println "set output"))
+  (println "set output")
+  (flush))
 
 (ann plot-forest-to-eps [PercolationP String -> nil])
 (defn plot-forest-to-eps
@@ -153,7 +154,7 @@
                                                 -> (clojure.lang.Seqable y)]))
 
 (ann update-without-plot (Fn [PercolationP -> PercolationP]
-                             [AnyInteger PercolationP -> PercolationP]))
+                             [PercolationP AnyInteger -> PercolationP]))
 (defn- update-without-plot
   ([p] (update-without-plot p 1))
   ([p n]
@@ -205,11 +206,21 @@
           (sim/plot-ntrees-graph gp final-grid)
           (flush-epslatex))))))
 
-(ann multi-plot-percolation [plot/GnuplotP PercolationP * -> nil])
-(defn multi-plot-percolation 
+(ann never-nil (All [x] [(U x nil) -> x]))
+(defn never-nil [a]
+  (assert (not (nil? a)) "Found nil")
+  a)
+
+(ann ^:nocheck clojure.core/spit [clojure.java.io/IOFactory Any & {:append Any} -> Any])
+
+(nilable-param java.io.File/createTempFile {2 #{1}})
+(non-nil-return java.io.File/createTempFile :all)
+
+(ann multi-plot-nburning-percolation [plot/GnuplotP (Seqable PercolationP) -> nil])
+(defn multi-plot-nburning-percolation 
   "Make a nice multiplot to study relationship of q and grid size
   to fire percolation."
-  [gp & ps]
+  [gp ps]
   (assert (seq ps) "Must provide at least one grid")
   (let [get-history (fn> [p :- PercolationP] 
                          (-> p :grid :history 
@@ -218,47 +229,94 @@
     (assert (apply == (get-history (first ps))
                    (map get-history (next ps)))
             "All grid histories must be identical length"))
-  (sim/with-gunplot-toplevel gp
-    ;; plot nburning graph
-    (let [history-count (-> ps first :grid :history 
-                            (ann-form sim/GridHistory)
-                            count)
-          histories (map (fn> :- sim/GridHistory
-                           [p :- PercolationP]
-                           (-> p :grid :history))
-                         ps)]
-      (println set-epslatex)
-      (println "set title 'Number of Burning trees'")
-      (println "set xlabel 'Time'")
-      (println "set ylabel 'Burning trees'")
-      (println "set xtics nomirror autofreq")
-      (println "set ytics nomirror autofreq")
-      (println "unset x2tics")
-      (println "unset y2tics")
-      (println "plot '-' "
-               (str/join ", "
-                 (let [indexed-ps (map-indexed (inst vector Number PercolationP Any Any Any Any) ps)]
-                   (for> :- String
-                     [[n {{:keys [rows cols]} :grid, :keys [q style]}] :- '[Number PercolationP], indexed-ps]
-                     (do 
-                       (ann-form [rows cols] '[Number Number])
-                       ;(assert (number? q))
-                       ;(assert (number? rows))
-                       ;(assert (number? cols))
-                       (str "using 1:" (inc n) " title 'q=" q
-                            ", " rows "x" cols
-                            " with " (or style "lines")))))))
-      (dotimes> [n history-count]
-        (let [nburnings (map (fn> :- Number
-                               [e :- sim/GridHistory]
-                               (-> (nth e n) 
-                                   (ann-form sim/GridHistoryEntry)
-                                   :nburning
-                                   (ann-form Number)))
-                             histories)]
-          (apply println n nburnings)))
-      (sim/gnuplot-eof gp)
-      (flush-epslatex))))
+  (let [temp-file (java.io.File/createTempFile "multiplot-data" nil)
+        history-count (-> ps first :grid :history 
+                          (ann-form sim/GridHistory)
+                          count)
+        histories (map (fn> :- sim/GridHistory
+                            [p :- PercolationP]
+                            (-> p :grid :history))
+                       ps)]
+    (prn temp-file)
+    ;dump data to a temp file
+    (dotimes> [n history-count]
+      (let [nburnings (map (fn> :- Number
+                             [e :- sim/GridHistory]
+                             (-> (nth e n) 
+                                 (ann-form sim/GridHistoryEntry)
+                                 :nburning
+                                 (ann-form Number)))
+                           histories)]
+        (spit temp-file (str (str/join " " (cons n nburnings)) "\n") :append true)))
+      (sim/with-gunplot-toplevel gp
+        ;; plot nburning graph
+          (println set-epslatex " color")
+          (println "set output 'multi-nburning.tex'")
+          (println "set title 'Number of Burning trees'")
+          (println "set xlabel 'Time'")
+          (println "set ylabel 'Burning trees'")
+          (println "set xtics nomirror autofreq")
+          (println "set ytics nomirror autofreq")
+          (println "unset x2tics")
+          (println "unset y2tics")
+          (println "set key outside")
+          (println "set key right top")
+          (println "save 'multigraph.gp'")
+          (let [plot-opts (str/join ", '' " ; '' is reusing the output (temp file) from previous calls
+                           (let [indexed-ps (map-indexed (inst vector Number PercolationP Any Any Any Any) ps)]
+                             (for> :- String
+                               [[n {{:keys [rows cols]} :grid, :keys [q style]}] :- '[Number PercolationP], indexed-ps]
+                               (do 
+                                 (ann-form [q rows cols] '[Number Number Number])
+                                 (assert (number? q))
+                                 (assert (number? rows))
+                                 (assert (number? cols))
+                                 (str "using 1:" (+ 2 n)
+                                      " title 'q=" q
+                                      ", " rows "x" cols "'"
+                                      )))))]
+            (binding [*out* (io/writer (never-nil System/out))]
+              (prn (with-out-str (println (str "plot '" (.getAbsolutePath temp-file) "'") plot-opts))))
+            (println (str "plot '" (.getAbsolutePath temp-file) "'") plot-opts))
+          (sim/gnuplot-eof gp)
+          (flush-epslatex)
+          (flush))))
+
+(def-alias MultiPlotEntry
+  "Internal to do-multiplot-task.
+  
+  - :size  make a grid with dimensions size x size
+  - :q     probably of points being a tree is q"
+  '{:size Long, :q Number})
+
+(ann do-multiplot-task [-> nil])
+(defn do-multiplot-task
+  "Make the plot for percolation task using several different grids"
+  []
+  (let [gp (plot/start)]
+    (letfn> [start :- [& {} :mandatory {:size Long, :q Number} -> PercolationP]
+             (start [& {:keys [size q]}]
+               (start! :q q :grid (initial-grid :q q :rows size :cols size)
+                       :gnuplot gp :no-update true))
+
+             make-grids :- [Number MultiPlotEntry * -> (Seqable PercolationP)]
+             (make-grids [iters & specs]
+               (for> :- PercolationP
+                 [{:keys [size q]} :- MultiPlotEntry, specs]
+                 (-> (start :size size :q q)
+                     (update-without-plot 100))))]
+      (let [gs (make-grids
+                 100
+                 {:size 50, :q 0.3}
+                 {:size 50, :q 0.4}
+                 {:size 50, :q 0.5}
+                 {:size 100, :q 0.3}
+                 {:size 100, :q 0.4}
+                 {:size 100, :q 0.5}
+                 {:size 200, :q 0.3}
+                 {:size 200, :q 0.4}
+                 {:size 200, :q 0.5})]
+        (multi-plot-nburning-percolation gp gs)))))
 
 (comment
 (ann spit-grid [Grid IOFactory])
@@ -295,26 +353,7 @@
   (run-percolation-test "." 0.5)
   (run-percolation-test "." 0.3)
   (run-percolation-test "." 0.4)
-
-  (let [gp (plot/start)]
-    (letfn> [start :- [& '{:size Number, :q Number}]
-             (start [& {:keys [size q]}]
-               (start! :rows size :cols size :q q
-                       :gnuplot gp :no-update true))
-
-             make-grids :- [Number '{:size Number :q Number} * -> (Seqable PercolationP)]
-             (make-grids [iters & specs]
-               (for [{:keys [size q]} specs]
-                 (-> (start :size size :q q)
-                     (update-without-plot 100))))]
-      (let [gs (make-grids
-                 100
-                 {:size 100, :q 0.3}
-                 {:size 100, :q 0.4}
-                 {:size 100, :q 0.5}
-                 {:size 200, :q 0.3}
-                 {:size 200, :q 0.4}
-                 {:size 200, :q 0.5})]
-        (multi-plot-percolation gp gs))))
+  (do-multiplot-task)
   )
+
  

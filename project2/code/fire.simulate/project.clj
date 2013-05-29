@@ -6,9 +6,10 @@
   :profiles {:dev {:repl-options {:port 64431}}}
   :repositories {"sonatype-oss-public" "https://oss.sonatype.org/content/groups/public/"}
   :dependencies [[org.clojure/clojure "1.5.1"]
-                 [org.clojure/core.typed "0.1.15-SNAPSHOT"]
+                 [org.clojure/core.typed "0.1.16-SNAPSHOT"]
                  [org.clojure/tools.cli "0.2.2"]
                  [seesaw "1.4.3"]
+                 [org.clojure/tools.trace "0.7.5"]
                  [org.clojure/math.numeric-tower "0.0.2"]]
   :warn-on-reflection true
   :main fire.main)

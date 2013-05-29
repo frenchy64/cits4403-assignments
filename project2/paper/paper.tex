@@ -3,19 +3,73 @@
 \usepackage[style=alphabetic, sorting=nyt]{biblatex}
 \addbibresource{bibliography.bib}
 
+\usepackage{graphicx}
+\usepackage{epstopdf}
+
+\graphicspath{{../images/}}
+
+
 \title{CITS4403 Assignment 2 - Percolation and forest fires}
 \author{Ambrose Bonnaire-Sergeant - 20350292}
 
 \begin{document}
 
 \maketitle
+\pagebreak
 
-\section{Introduction} 
+% Why was the study undertaken? What was the research question, the tested hypothesis or the purpose of the research?
+\section{Introduction}
 
-\section{Methods} 
+% Why? What?
+% Forest fire simulation
+% - first introduced by Bak90, speculating that the model displays self-organised criticality
+% - further investigation by Grass
 
-\section{Results} 
+% Percolation
+% what are CA's for?
+% what is the forest fire model? what does it achieve?
+% - good description in 2nd paper: probabilistic CA
+% - spatial distribution of dissipation (fire) and its dependence
+%   on the driving force.
+% - shows that ``energy'', when injected uniformly (trees grow uniformly), is
+%   dissipated (trees burn) on a fractal.
+% - demonstrates (in a toy model) the emergence of scaling and fractal energy
+%   dissipation.
+% - could provide a consistent and theoretically sustainable phenomenological 
+%   picture of a class of turbulent phenomena
 
-\section{Conclusions}
+% self-organised criticality
+% - see intro to Drossel for good history
+% - forest fires shown to not be critical but istead 
+
+
+% Rules of the forest fire model
+% - parameters
+% - dimensions
+
+% When, where, and how was the study done? What materials were used or who was included in the study groups (patients, etc.)?
+\section{Methods}
+
+\subsection{Percolation Theshold}
+
+By isolating the variables related to generating the initial lattice, we observe
+the relationship between the initial lattice and the ability for a forest
+fire to percolate. Setting \emph{p} = 0 and \emph{f} = 0 results in a static lattice
+over time, except for the effects of fires already present at \emph{t} = 0:
+these fires propagate as normal, but under these conditions
+no new fires can appear spontaneously, nor can new trees grow.
+
+\begin{figure}
+  \input{../images/initial-state-q0-5}
+\end{figure}
+
+% What answer was found to the research question; what did the study find? Was the tested hypothesis true?
+\section{Results}
+
+
+% What might the answer infer and why does it matter? How does it fit in with what other researchers have found? What are the perspectives for future research?
+\section{Discussion}
+
+The study of percolation in models
 
 \end{document}

@@ -2,10 +2,12 @@
   "This namespace is the main driver for the fire simulation."
   (:require [clojure.core.typed :refer [ann check-ns typed-deps def-alias ann-datatype
                                         for> fn> ann-form AnyInteger doseq> cf inst
-                                        letfn>]]
+                                        letfn> override-method dotimes>]
+             :as tc]
             [clojure.core.typed.hole :as h]
             [fire.gnuplot :as plot :refer [GnuplotP]]
-            [clojure.string :as str])
+            [clojure.string :as str]
+            [clojure.tools.trace :as trace])
   (:import (clojure.lang IPersistentVector IPersistentSet Seqable LazySeq)
            (java.io Writer)))
 
@@ -21,16 +23,30 @@
   "A point can either be empty, a tree, or a burning tree."
   (U ':burning ':tree ':empty))
 
+(def-alias GridHistoryEntry
+  "Some data about a particular state.
+
+  - :nburning  number of burning points at this state
+  - :ntrees  number of green trees at this state"
+  '{:nburning AnyInteger
+    :ntrees AnyInteger})
+
+(def-alias GridHistory
+  "A vector of history states on a grid"
+  (IPersistentVector GridHistoryEntry))
+
 (def-alias Grid
   "An immutable snapshot of the world state.
   
   - :grid   the grid
   - :rows   number of rows
-  - :cols   number of columns"
+  - :cols   number of columns
+  - :history  a chronological vector of interesting data of previous states.
+              See GridHistory."
   '{:grid (IPersistentVector (IPersistentVector State))
-    :rows AnyInteger,
+    :rows AnyInteger
     :cols AnyInteger
-    :history (IPersistentVector '{:nburning AnyInteger})})
+    :history GridHistory})
 
 (def-alias Point 
   "A point in 2d space."
@@ -63,6 +79,23 @@
   [p]
   (< (rand) p))
 
+(defmacro with-gunplot-toplevel
+  "Run the body with gnuplot as stdout.
+  Do not call with-gunplot-toplevel in the body."
+  [gp & body]
+  `(binding [*out* (:out ~gp)]
+     ~@body
+     (gnuplot-eof ~gp)))
+
+(ann gnuplot-eof [GnuplotP -> nil])
+(defn gnuplot-eof
+  "Finish the gnuplot transmission and flush stdout."
+  [gp]
+  ; tell gnuplot we're done
+  ; (an extra line to be sure)
+  (println)
+  (println "e")
+  (flush))
 
 ;-----------------------------------------------------------------
 ; Grid operations
@@ -123,7 +156,7 @@
 
 (ann neighbour-points [Grid Point -> (LazySeq Point)])
 (defn neighbour-points 
-  "Return the a lazy sequence containing the states of neighbour points of point pnt, respecting
+  "Return a lazy sequence containing the states of neighbour points of point pnt, respecting
   periodic boundary conditions"
   [grid [^long row, ^long col, :as p]]
   (letfn> [wrap-around :- [AnyInteger AnyInteger -> AnyInteger]
@@ -143,10 +176,10 @@
           _ (assert (<= 0 col (dec ncols)) "Column out of bounds")]
       ; collect the states of each neighbour, respecting periodic boundary conditions
       (for> :- Point 
-            [[^long row-diff ^long col-diff] :- '[Long Long], neighbour-positions]
-            (let [neighbour-row (wrap-around (+ row row-diff) nrows)
-                  neighbour-col (wrap-around (+ col col-diff) ncols)]
-              [neighbour-row neighbour-col])))))
+        [[^long row-diff ^long col-diff] :- '[Long Long], neighbour-positions]
+        (let [neighbour-row (wrap-around (+ row row-diff) nrows)
+              neighbour-col (wrap-around (+ col col-diff) ncols)]
+          [neighbour-row neighbour-col])))))
 
 (ann nearest-neighbours [Grid Point -> (LazySeq State)])
 (defn nearest-neighbours 
@@ -174,7 +207,7 @@
       :tree 
       (if (some #(= :burning %) neighbours)
         :burning
-        (if (occurs? f) 
+        (if (occurs? f)
           :burning
           :tree))
 
@@ -204,8 +237,10 @@
         ;----------------------------------------------------------------------------------
         ]
     (-> grid
+      ; add to the history
       (assoc :history 
-             (conj (:history grid) {:nburning (count (filter #(= :burning %) (flat-grid grid)))}))
+             (conj (:history grid) {:nburning (count (filter #(= :burning %) (flat-grid grid)))
+                                    :ntrees   (count (filter #(= :tree %) (flat-grid grid)))}))
       (assoc :grid
              (vec
                (for> :- (IPersistentVector State)
@@ -224,65 +259,119 @@
 ; gnuplot operations
 ;-----------------------------------------------------------------
 
+(ann x-axis-size Long)
+(def x-axis-size 500)
+
+(ann plot-forest-via-array* [GnuplotP Grid Number -> nil])
+(defn- plot-forest-via-array*
+  "Plot the forest using raw format."
+  [gp grid time-code]
+  (let [{:keys [nrows ncols]} (grid-dimensions grid)]
+    (println
+      (str "plot '-' binary array=" nrows  "x" ncols
+           " flipy format='%char' title 'Forest Fire Simulation - Frame " time-code
+           "' with image"))
+    ; print each point to gnuplot as a char array.
+    (let [^chars arr (char-array 
+                       ; array length is rowsxcols
+                       (* nrows ncols)
+                       (map (fn> [s :- State]
+                                 (-> s state->number char))
+                            ; reverse the grid, we provide each row in reverse order.
+                            (apply concat (rseq (:grid grid)))))]
+      (.write *out* arr))
+    (gnuplot-eof gp)))
+
+(ann plot-forest [GnuplotP Grid Number -> nil])
+(defn plot-forest
+  "Plot the forest fire simulation lattice.
+  Assumption: output term is already set."
+  [gp grid time-code]
+  ; *out* is gnuplot
+  ;plot the forest
+  ;#_(println "set term x11 0")
+  (println (slurp "resources/setup-gnuplot.gpi"))
+  (println "unset grid")
+  (println "unset xlabel")
+  (println "unset ylabel")
+  (println "unset xtics")
+  (println "unset ytics")
+  (println "unset x2tics")
+  (println "unset y2tics")
+  (plot-forest-via-array* gp grid time-code)
+  (gnuplot-eof gp))
+
+(ann plot-nburning-graph [GnuplotP Grid -> nil])
+(defn plot-nburning-graph
+  "Plot the number of burning trees over time graph. 
+  Assumption: output term is already set.
+  Does not flush stdout and does not end transmission to gnuplot."
+  [gp {:keys [history] :as grid}]
+  (ann-form history GridHistory)
+  (println "set title 'Number of Burning trees'")
+  (println "set xlabel 'Time'")
+  (println "set ylabel 'Burning trees'")
+  (println "set xtics nomirror autofreq")
+  (println "set ytics nomirror autofreq")
+  (println "unset x2tics")
+  (println "unset y2tics")
+  (println "plot '-' using 1:2 title 'Burning' with lines")
+  (dotimes> [n (count history)]
+    (let [{:keys [nburning]} (nth history n)]
+      (ann-form nburning Number)
+      (println n nburning)))
+  (gnuplot-eof gp))
+
+(ann plot-ntrees-graph [GnuplotP Grid -> nil])
+(defn plot-ntrees-graph
+  "Plot the number of green trees over time graph. 
+  Assumption: output term is already set."
+  [gp {:keys [history] :as grid}]
+  (ann-form history GridHistory)
+  (println "set title 'Number of Green trees'")
+  (println "set xlabel 'Time'")
+  (println "set ylabel 'Green trees'")
+  (println "set xtics nomirror autofreq")
+  (println "set ytics nomirror autofreq")
+  (println "unset x2tics")
+  (println "unset y2tics")
+  (println "plot '-'using 1:2 title 'Green' with lines")
+  (dotimes> [n (count history)]
+    (let [{:keys [ntrees]} (nth history n)]
+      (ann-form ntrees Number)
+      (println n ntrees)))
+  (gnuplot-eof gp))
+
 (ann update-simulation! [GnuplotP Grid & {} :mandatory {:time-code Number} -> nil])
 (defn update-simulation!
   "Update the simulation with the provided grid.
 
   Accepts mandatory keyword parameters:
     - :time-code  an integer of the current frame number"
-  [{:keys [out] :as gp} {:keys [history] :as grid} & {:keys [time-code] :as opt}]
-  (ann-form history (IPersistentVector '{:nburning AnyInteger}))
-  (let [{:keys [nrows ncols]} (grid-dimensions grid)]
-    ; *out* is gnuplot
-    (binding [*out* out]
-      ;plot the forest
-      (println (slurp "resources/setup-gnuplot.gpi"))
-      (println "set term x11 0")
-      (println "unset grid")
-      (println "unset xlabel")
-      (println "unset ylabel")
-      (println "unset xtics")
-      (println "unset ytics")
-      (println "unset x2tics")
-      (println "unset y2tics")
-      (println
-        (str "plot '-' binary array=" nrows  "x" ncols
-             " flipy format='%char' title 'Forest Fire Simulation - Frame " time-code
-             "' with image"))
-      ; print each point to gnuplot as a char array.
-      (let [^chars arr (char-array 
-                         ; array length is rowsxcols
-                         (* nrows ncols)
-                         (map (fn> [s :- State]
-                                (-> s state->number char))
-                              ; reverse the grid, we provide each row in reverse order.
-                              (apply concat (rseq (:grid grid)))))]
-        (.write ^Writer *out* arr))
-      ;plot the burning tree graph
-      (println "set term x11 1")
-      (println "unset grid")
-      (println "set title 'Number of Burning trees'")
-      (println "set xlabel 'Time'")
-      (println "set ylabel 'Number of Burning trees'")
-      ;plot the last 20 entries
-      (println (str "plot [" (max (- (count history) 20) 0) ":" (count history) "][0:] '-' with lines"))
-      (doseq> [{:keys [nburning]} :- '{:nburning AnyInteger}, history]
-        (println nburning))
-      ; tell gnuplot we're done
-      (println)
-      (println "e")
-      (flush))))
+  [gp {:keys [history] :as grid} & {:keys [time-code] :as opt}]
+  {:pre [time-code]}
+  ; make the forest
+  (println "set term x11 0")
+  (plot-forest gp grid time-code)
+  (gnuplot-eof gp)
+
+  ; make the burning graph
+  (println "set term x11 1")
+  (plot-nburning-graph gp grid)
+  (gnuplot-eof gp)
+
+  ; make the green graph
+  (println "set term x11 2")
+  (plot-ntrees-graph gp grid)
+  (gnuplot-eof gp))
 
 (ann setup-gnuplot! [GnuplotP -> nil])
 (defn setup-gnuplot! 
   "Setup the gnuplot window to prepare writing the simulation.
   Actual setup commands are in 'resources/setup-gnuplot.gpi'."
-  [{:keys [out]}]
-  ; Print stdout straight to the Gnuplot process
-  (binding [*out* out]
-    (println (slurp "resources/setup-gnuplot.gpi"))
-    (flush)))
-
+  [gp]
+  (println (slurp "resources/setup-gnuplot.gpi"))
+  (flush))
 
 (comment
   (ann run-simulation! [& {:p Number :f Number} -> nil])

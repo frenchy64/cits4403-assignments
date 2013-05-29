@@ -1,4 +1,4 @@
-set term x11 size 800,600 # which "device" to plot onto: x11 window
+#set term x11 size 800,600 # which "device" to plot onto: x11 window
 
 set size ratio 1 # aspect ratio of the axes
 

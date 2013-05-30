@@ -1,5 +1,6 @@
 (ns fire.simulate
-  "This namespace is the main driver for the fire simulation."
+  "This namespace defines operations for the study of
+  percolation in the forest fire simulation."
   (:require [clojure.core.typed :refer [ann check-ns typed-deps def-alias ann-datatype
                                         for> fn> ann-form AnyInteger doseq> cf inst
                                         letfn> override-method dotimes>]
@@ -29,11 +30,17 @@
   - :nburning  number of burning points at this state
   - :ntrees  number of green trees at this state"
   '{:nburning AnyInteger
-    :ntrees AnyInteger})
+    :ntrees AnyInteger
+    :nempty AnyInteger})
 
 (def-alias GridHistory
   "A vector of history states on a grid"
   (IPersistentVector GridHistoryEntry))
+
+(def-alias GridVector
+  "A vector of vectors of states representing a cellular
+  automata lattice."
+  (IPersistentVector (IPersistentVector State)))
 
 (def-alias Grid
   "An immutable snapshot of the world state.
@@ -42,22 +49,23 @@
   - :rows   number of rows
   - :cols   number of columns
   - :history  a chronological vector of interesting data of previous states.
-              See GridHistory."
-  '{:grid (IPersistentVector (IPersistentVector State))
+              See GridHistory.
+  - :q   the initial probability of a green tree at time 0 at a site
+  - :p   the probability a tree will grow in an empty site
+  - :f   the probability a site with a tree will burn (lightning)
+  - :frame    the frame number corresponding to the grid, displayed in the gnuplot graph"
+  '{:grid GridVector
     :rows AnyInteger
     :cols AnyInteger
-    :history GridHistory})
+    :history GridHistory
+    :q Number
+    :p Number
+    :f Number
+    :frame AnyInteger})
 
 (def-alias Point 
   "A point in 2d space."
   '[AnyInteger, AnyInteger])
-
-(def-alias GridOpt 
-  "Options to configure grid generation.
-  :p - the probability a tree will grow in an empty site
-  :f - the probability a site with a tree will burn (lightning)"
-  '{:p Number,
-    :f Number})
 
 ;-----------------------------------------------------------------
 ; Utility functions
@@ -101,12 +109,13 @@
 ; Grid operations
 ;-----------------------------------------------------------------
 
-(ann grid-from-fn [[Point -> State] & {:rows Long, :cols Long} -> Grid])
+(ann grid-from-fn [[Point -> State] & {:rows Long, :cols Long} :mandatory {:q Number :p Number :f Number} -> Grid])
 (defn grid-from-fn 
   "Generate a grid with dimensions rows by cols. state-fn
   is fed each Point in the grid, and should return the initial state
   at that point."
-  [state-fn & {:keys [rows cols] :or {rows 100 cols 100}}]
+  [state-fn & {:keys [rows cols q p f] :or {rows 100 cols 100}}]
+  {:pre [q p f]}
   {:grid (vec
            (for> :- (IPersistentVector State)
                  [row :- AnyInteger, (range rows)]
@@ -116,22 +125,29 @@
                          (state-fn [row col])))))
    :rows rows
    :cols cols
-   :history []})
+   :history []
+   :frame 0
+   :q q
+   :p p
+   :f f})
 
-(ann initial-grid [& {:rows Long, :cols Long} -> Grid])
+(ann initial-grid [& {:rows Long, :cols Long} :mandatory {:q Number :p Number :f Number} -> Grid])
 (defn initial-grid
   "Return the initial grid state, a vector of vectors, with each
   position initialised to :empty. If not provided, number of rows and column default
   to 100."
-  [& {:keys [rows cols] :or {rows 100 cols 100}}]
-  (grid-from-fn (constantly :empty) :rows rows :cols cols))
+  [& {:keys [rows cols q p f] :or {rows 100 cols 100}}]
+  {:pre [q p f]}
+  (grid-from-fn (constantly :empty) :rows rows :cols cols
+                :q q :p p :f f))
 
 (ann state-at [Grid Point -> State])
 (defn state-at 
   "Return the state in the provided grid, at the provided 2d point.
   Throws an exception if the point is outside the grid's dimensions."
-  [grid [row col :as pnt]]
-  (-> (:grid grid)
+  [{:keys [grid]} [row col]]
+  (ann-form grid GridVector)
+  (-> grid
       (nth row)
       (nth col)))
 
@@ -190,11 +206,11 @@
        (map (fn> [p1 :- Point]
               (state-at grid p1)))))
 
-(ann next-state [Grid State Point GridOpt -> State])
+(ann next-state [Grid State Point -> State])
 (defn next-state
   "Return the state at the next time interval in grid for
   the given point, with current state s."
-  [grid s [row col :as point] {:keys [f p] :as opt}]
+  [{:keys [f p] :as grid} s [row col :as point]]
   (let [neighbours (nearest-neighbours grid [row col])]
     (case s
       ;1. A burning tree becomes an empty site
@@ -218,15 +234,15 @@
 
 (ann flat-grid [Grid -> (Seqable State)])
 (defn flat-grid [{:keys [grid]}]
-  (ann-form grid (Seqable (Seqable State)))
+  (ann-form grid GridVector)
   (apply concat grid))
 
-(ann next-grid [Grid GridOpt -> Grid])
+(ann next-grid [Grid -> Grid])
 (defn next-grid 
   "Simultaneously update a Grid to the next time increment
   according to the 4 update rules. Observed periodic boundary conditions.
   See next-state for the state increment."
-  [grid opt]
+  [grid]
   (let [; ---------------------------------------------------------------------------------
         ; START TYPE SYSTEM BOILERPLATE
         ;  we need to instantiate `vector` because core.typed's inference isn't good enough.
@@ -240,7 +256,8 @@
       ; add to the history
       (assoc :history 
              (conj (:history grid) {:nburning (count (filter #(= :burning %) (flat-grid grid)))
-                                    :ntrees   (count (filter #(= :tree %) (flat-grid grid)))}))
+                                    :ntrees   (count (filter #(= :tree %) (flat-grid grid)))
+                                    :nempty   (count (filter #(= :empty %) (flat-grid grid)))}))
       (assoc :grid
              (vec
                (for> :- (IPersistentVector State)
@@ -252,7 +269,7 @@
                      [[col s] :- '[AnyInteger State], (map-indexed col-states ss)]
                      ; col is the col number
                      ; s is a state at a point
-                     (next-state grid s [row col] opt)))))))))
+                     (next-state grid s [row col])))))))))
 
 
 ;-----------------------------------------------------------------
@@ -262,14 +279,15 @@
 (ann x-axis-size Long)
 (def x-axis-size 500)
 
-(ann plot-forest-via-array* [GnuplotP Grid Number -> nil])
+(ann plot-forest-via-array* [GnuplotP Grid -> nil])
 (defn- plot-forest-via-array*
   "Plot the forest using raw format."
-  [gp grid time-code]
+  [gp {:keys [frame] :as grid}]
+  (ann-form frame Number)
   (let [{:keys [nrows ncols]} (grid-dimensions grid)]
     (println
       (str "plot '-' binary array=" nrows  "x" ncols
-           " flipy format='%char' title 'Forest Fire Simulation - Frame " time-code
+           " flipy format='%char' title 'Forest Fire Simulation - Frame " frame
            "' with image"))
     ; print each point to gnuplot as a char array.
     (let [^chars arr (char-array 
@@ -282,11 +300,12 @@
       (.write *out* arr))
     (gnuplot-eof gp)))
 
-(ann plot-forest [GnuplotP Grid Number -> nil])
+(ann plot-forest [GnuplotP Grid -> nil])
 (defn plot-forest
   "Plot the forest fire simulation lattice.
   Assumption: output term is already set."
-  [gp grid time-code]
+  [gp {:keys [frame] :as grid}]
+  (ann-form frame Number)
   ; *out* is gnuplot
   ;plot the forest
   ;#_(println "set term x11 0")
@@ -298,7 +317,7 @@
   (println "unset ytics")
   (println "unset x2tics")
   (println "unset y2tics")
-  (plot-forest-via-array* gp grid time-code)
+  (plot-forest-via-array* gp grid)
   (gnuplot-eof gp))
 
 (ann plot-nburning-graph [GnuplotP Grid -> nil])
@@ -342,17 +361,13 @@
       (println n ntrees)))
   (gnuplot-eof gp))
 
-(ann update-simulation! [GnuplotP Grid & {} :mandatory {:time-code Number} -> nil])
+(ann update-simulation! [GnuplotP Grid -> nil])
 (defn update-simulation!
-  "Update the simulation with the provided grid.
-
-  Accepts mandatory keyword parameters:
-    - :time-code  an integer of the current frame number"
-  [gp {:keys [history] :as grid} & {:keys [time-code] :as opt}]
-  {:pre [time-code]}
+  "Update the simulation with the provided grid."
+  [gp grid]
   ; make the forest
   (println "set term x11 0")
-  (plot-forest gp grid time-code)
+  (plot-forest gp grid)
   (gnuplot-eof gp)
 
   ; make the burning graph
